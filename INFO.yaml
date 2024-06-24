@@ -5,9 +5,9 @@ project_category: ''
 lifecycle_state: 'Incubation'
 project_lead: &opnfv_samplevnf_ptl
     name: 'Luc Provoost'
-    email: 'luc.provoost@intel.com'
-    company: 'intel.com'
-    id: 'provoost'
+    email: 'luc.provoost@gmail.com'
+    company: '-'
+    id: 'LucProvoost'
     timezone: 'Unknown'
 primary_contact: *opnfv_samplevnf_ptl
 issue_tracking:
@@ -43,12 +43,12 @@ committers:
       company: 'intel.com'
       id: 'trev'
     - name: 'Xavier Simonart'
-      email: 'xavier.simonart@intel.com'
-      company: 'intel.com'
-      id: 'simonarx'
+      email: 'simonartxavier@gmail.com'
+      company: '-'
+      id: 'xavier.simonart'
     - name: 'Patrice Buriez'
-      email: 'patrice.buriez@intel.com'
-      company: 'intel.com'
+      email: 'patrice.buriez@chenapan.org'
+      company: '-'
       id: 'pburiez'
 tsc:
     # yamllint disable rule:line-length

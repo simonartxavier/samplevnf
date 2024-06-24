@@ -18,6 +18,7 @@
 ##
 import sys
 import time
+import copy
 from math import ceil
 from statistics import mean
 from past.utils import old_div
@@ -31,12 +32,13 @@ class FlowSizeTest(RapidTest):
     Class to manage the flowsizetesting
     """
     def __init__(self, test_param, lat_percentile, runtime, testname,
-            environment_file, gen_machine, sut_machine, background_machines):
+            environment_file, gen_machine, sut_machine, background_machines, sleep_time):
         super().__init__(test_param, runtime, testname, environment_file)
         self.gen_machine = gen_machine
         self.sut_machine = sut_machine
         self.background_machines = background_machines
         self.test['lat_percentile'] = lat_percentile
+        self.test['sleep_time'] = sleep_time
         if self.test['test'] == 'TST009test':
             # This test implements some of the testing as defined in
             # https://docbox.etsi.org/ISG/NFV/open/Publications_pdf/Specs-Reports/NFV-TST%20009v3.2.1%20-%20GS%20-%20NFVI_Benchmarks.pdf
@@ -51,7 +53,7 @@ class FlowSizeTest(RapidTest):
                 self.test['TST009_S'].append((m+1) * self.test['stepsize'])
         elif self.test['test'] == 'fixed_rate':
             for key in['drop_rate_threshold','lat_avg_threshold',
-                    'lat_perc_threshold','lat_max_threshold']:
+                    'lat_perc_threshold','lat_max_threshold','mis_ordered_threshold']:
                 self.test[key] = inf
 
     def new_speed(self, speed,size,success):
@@ -63,8 +65,10 @@ class FlowSizeTest(RapidTest):
             if success:
                 self.test['TST009_L'] = self.test['TST009_m'] + 1
             else:
-                self.test['TST009_R'] = max(self.test['TST009_m'] - 1, self.test['TST009_L'])
-            self.test['TST009_m'] = int (old_div((self.test['TST009_L'] + self.test['TST009_R']),2))
+                self.test['TST009_R'] = max(self.test['TST009_m'] - 1,
+                        self.test['TST009_L'])
+            self.test['TST009_m'] = int (old_div((self.test['TST009_L'] +
+                self.test['TST009_R']),2))
             return (self.get_percentageof10Gbps(self.test['TST009_S'][self.test['TST009_m']],size))
         else:
             if success:
@@ -81,7 +85,8 @@ class FlowSizeTest(RapidTest):
         elif 'TST009' in self.test.keys():
             self.test['TST009_L'] = 0
             self.test['TST009_R'] = self.test['TST009_n'] - 1
-            self.test['TST009_m'] = int(old_div((self.test['TST009_L'] + self.test['TST009_R']), 2))
+            self.test['TST009_m'] = int(old_div((self.test['TST009_L'] +
+                self.test['TST009_R']), 2))
             return (self.get_percentageof10Gbps(self.test['TST009_S'][self.test['TST009_m']],size))
         else:
             self.test['minspeed'] = 0
@@ -96,179 +101,226 @@ class FlowSizeTest(RapidTest):
         else:
             return ((self.test['maxspeed'] - self.test['minspeed']) <= self.test['accuracy'])
 
+    def warm_up(self):
+        # Running at low speed to make sure the ARP messages can get through.
+        # If not doing this, the ARP message could be dropped by a switch in overload and then the test will not give proper results
+        # Note however that if we would run the test steps during a very long time, the ARP would expire in the switch.
+        # PROX will send a new ARP request every seconds so chances are very low that they will all fail to get through
+        imix = self.test['warmupimix']
+        FLOWSIZE = self.test['warmupflowsize']
+        WARMUPSPEED = self.test['warmupspeed']
+        WARMUPTIME = self.test['warmuptime']
+
+        if WARMUPTIME == 0:
+            RapidLog.info(("Not Warming up"))
+            return
+
+        RapidLog.info(("Warming up during {} seconds..., packet size = {},"
+            " flows = {}, speed = {}").format(WARMUPTIME, imix, FLOWSIZE,
+                WARMUPSPEED))
+        self.gen_machine.set_generator_speed(WARMUPSPEED)
+        self.set_background_speed(self.background_machines, WARMUPSPEED)
+        self.gen_machine.set_udp_packet_size(imix)
+        self.set_background_size(self.background_machines, imix)
+        if FLOWSIZE:
+            _ = self.gen_machine.set_flows(FLOWSIZE)
+            self.set_background_flows(self.background_machines, FLOWSIZE)
+        self.gen_machine.start()
+        self.start_background_traffic(self.background_machines)
+        time.sleep(WARMUPTIME)
+        self.stop_background_traffic(self.background_machines)
+        self.gen_machine.stop()
+
     def run(self):
         result_details = {'Details': 'Nothing'}
-        self.gen_machine.start_latency_cores()
-        TestPassed = True
+        TestResult = 0
+        end_data = {}
+        iteration_prefix = {}
+        self.warm_up()
         for imix in self.test['imixs']:
             size = mean(imix)
             self.gen_machine.set_udp_packet_size(imix)
             if self.background_machines:
-                backgroundinfo = '{}Running {} x background traffic not represented in the table{}'.format(bcolors.FLASH,len(self.background_machines),bcolors.ENDC)
+                backgroundinfo = ('{}Running {} x background traffic not '
+                    'represented in the table{}').format(bcolors.FLASH,
+                            len(self.background_machines),bcolors.ENDC)
             else:
                 backgroundinfo = '{}{}'.format(bcolors.FLASH,bcolors.ENDC)
             self.set_background_size(self.background_machines, imix)
-            RapidLog.info("+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+")
-            RapidLog.info('| UDP, {:>5} bytes, different number of flows by randomizing SRC & DST UDP port. {:116.116}|'.format(size, backgroundinfo))
-            RapidLog.info("+--------+------------------+-------------+-------------+-------------+------------------------+----------+----------+----------+-----------+-----------+-----------+-----------+-------+----+")
-            RapidLog.info('| Flows  | Speed requested  | Gen by core | Sent by NIC | Fwrd by SUT | Rec. by core           | Avg. Lat.|{:.0f} Pcentil| Max. Lat.|   Sent    |  Received |    Lost   | Total Lost|L.Ratio|Time|'.format(self.test['lat_percentile']*100))
-            RapidLog.info("+--------+------------------+-------------+-------------+-------------+------------------------+----------+----------+----------+-----------+-----------+-----------+-----------+-------+----+")
+            RapidLog.info('+' + '-' * 200 + '+')
+            RapidLog.info(("| UDP, {:>5} bytes, different number of flows by "
+                "randomizing SRC & DST UDP port. {:128.128}|").
+                format(round(size), backgroundinfo))
+            RapidLog.info('+' + '-' * 8 + '+' + '-' * 18 + '+' + '-' * 13 +
+                    '+' + '-' * 13 + '+' + '-' * 13 + '+' + '-' * 24 + '+' +
+                    '-' * 10 + '+' + '-' * 10 + '+' + '-' * 10 + '+' + '-' * 11
+                    + '+' + '-' * 11 + '+' + '-' * 11 + '+'  + '-' * 11 +  '+'
+                    + '-' * 7 + '+' + '-' * 11 + '+' + '-' * 4 + '+')
+            RapidLog.info(('| Flows  | Speed requested  | Gen by core | Sent by'
+                ' NIC | Fwrd by SUT | Rec. by core           | Avg. Lat.|{:.0f}'
+                ' Pcentil| Max. Lat.|   Sent    |  Received |    Lost   | Total'
+                ' Lost|L.Ratio|Mis-ordered|Time').format(self.test['lat_percentile']*100))
+            RapidLog.info('+' + '-' * 8 + '+' + '-' * 18 + '+' + '-' * 13 +
+                    '+' + '-' * 13 + '+' + '-' * 13 + '+' + '-' * 24 + '+' +
+                    '-' * 10 + '+' + '-' * 10 + '+' + '-' * 10 + '+' + '-' * 11
+                    + '+' + '-' * 11 + '+' + '-' * 11 + '+'  + '-' * 11 +  '+'
+                    + '-' * 7 + '+' + '-' * 11 + '+' + '-' * 4 + '+')
             for flow_number in self.test['flows']:
                 attempts = 0
                 self.gen_machine.reset_stats()
                 if self.sut_machine:
                     self.sut_machine.reset_stats()
-                flow_number = self.gen_machine.set_flows(flow_number)
-                self.set_background_flows(self.background_machines, flow_number)
-                endspeed = None
+                if flow_number != 0:
+                    flow_number = self.gen_machine.set_flows(flow_number)
+                    self.set_background_flows(self.background_machines, flow_number)
+                end_data['speed'] = None
                 speed = self.get_start_speed_and_init(size)
-                self.record_start_time()
                 while True:
                     attempts += 1
                     endwarning = False
-                    print(str(flow_number)+' flows: Measurement ongoing at speed: ' + str(round(speed,2)) + '%      ',end='\r')
+                    print('{} flows: Measurement ongoing at speed: {}%'.format(
+                        str(flow_number), str(round(speed, 2))), end='     \r')
                     sys.stdout.flush()
-                    # Start generating packets at requested speed (in % of a 10Gb/s link)
-                    self.gen_machine.set_generator_speed(speed)
-                    self.set_background_speed(self.background_machines, speed)
-                    self.start_background_traffic(self.background_machines)
-                    # Get statistics now that the generation is stable and initial ARP messages are dealt with
-                    pps_req_tx,pps_tx,pps_sut_tx,pps_rx,lat_avg,lat_perc , lat_perc_max, lat_max, abs_tx,abs_rx,abs_dropped, abs_tx_fail, drop_rate, lat_min, lat_used, r, actual_duration, avg_bg_rate, bucket_size, buckets = self.run_iteration(float(self.test['runtime']),flow_number,size,speed)
-                    self.stop_background_traffic(self.background_machines)
-                    if r > 1:
-                        retry_warning = bcolors.WARNING + ' {:1} retries needed'.format(r) +  bcolors.ENDC
+                    iteration_data = self.run_iteration(
+                            float(self.test['runtime']),flow_number,size,speed)
+                    if iteration_data['r'] > 1:
+                        retry_warning = '{} {:1} retries needed{}'.format(
+                                bcolors.WARNING, iteration_data['r'],
+                                bcolors.ENDC)
                     else:
                         retry_warning = ''
-                    # Drop rate is expressed in percentage. lat_used is a ratio (0 to 1). The sum of these 2 should be 100%.
-                    # If the sum is lower than 95, it means that more than 5% of the latency measurements where dropped for accuracy reasons.
-                    if (drop_rate + lat_used * 100) < 95:
-                        lat_warning = bcolors.WARNING + ' Latency accuracy issue?: {:>3.0f}%'.format(lat_used*100) +  bcolors.ENDC
+                    # Drop rate is expressed in percentage. lat_used is a ratio
+                    # (0 to 1). The sum of these 2 should be 100%.
+                    # If the sum is lower than 95, it means that more than 5%
+                    # of the latency measurements where dropped for accuracy
+                    # reasons.
+                    if (iteration_data['drop_rate'] +
+                            iteration_data['lat_used'] * 100) < 95:
+                        lat_warning = ('{} Latency accuracy issue?: {:>3.0f}%'
+                            '{}').format(bcolors.WARNING,
+                                    iteration_data['lat_used'] * 100,
+                                    bcolors.ENDC)
                     else:
                         lat_warning = ''
+                    iteration_prefix = {'speed' : bcolors.ENDC,
+                            'lat_avg' : bcolors.ENDC,
+                            'lat_perc' : bcolors.ENDC,
+                            'lat_max' : bcolors.ENDC,
+                            'abs_drop_rate' : bcolors.ENDC,
+                            'mis_ordered' : bcolors.ENDC,
+                            'drop_rate' : bcolors.ENDC}
                     if self.test['test'] == 'fixed_rate':
-                        endspeed = speed
-                        endpps_req_tx = None
-                        endpps_tx = None
-                        endpps_sut_tx = None
-                        endpps_rx = None
-                        endlat_avg = lat_avg
-                        endlat_perc = lat_perc
-                        endlat_perc_max = lat_perc_max
-                        endlat_max = lat_max
-                        endbuckets = buckets
-                        endabs_dropped = abs_dropped
-                        enddrop_rate = drop_rate
-                        endabs_tx = abs_tx
-                        endabs_rx = abs_rx
-                        endavg_bg_rate = avg_bg_rate
+                        end_data = copy.deepcopy(iteration_data)
+                        end_prefix = copy.deepcopy(iteration_prefix)
                         if lat_warning or retry_warning:
-                            endwarning = '|        | {:177.177} |'.format(retry_warning + lat_warning)
+                            endwarning = '|        | {:177.177} |'.format(
+                                    retry_warning + lat_warning)
                         success = True
-                        TestPassed = False # fixed rate testing cannot be True, it is just reporting numbers every second
-                        speed_prefix = lat_avg_prefix = lat_perc_prefix = lat_max_prefix = abs_drop_rate_prefix = drop_rate_prefix = bcolors.ENDC
-                    # The following if statement is testing if we pass the success criteria of a certain drop rate, average latency and maximum latency below the threshold
-                    # The drop rate success can be achieved in 2 ways: either the drop rate is below a treshold, either we want that no packet has been lost during the test
+                        # TestResult = TestResult + iteration_data['pps_rx']
+                        # fixed rate testing result is strange: we just report
+                        # the pps received
+                    # The following if statement is testing if we pass the
+                    # success criteria of a certain drop rate, average latency
+                    # and maximum latency below the threshold.
+                    # The drop rate success can be achieved in 2 ways: either
+                    # the drop rate is below a treshold, either we want that no
+                    # packet has been lost during the test.
                     # This can be specified by putting 0 in the .test file
-                    elif ((drop_rate < self.test['drop_rate_threshold']) or (abs_dropped==self.test['drop_rate_threshold']==0)) and (lat_avg< self.test['lat_avg_threshold']) and (lat_perc< self.test['lat_perc_threshold']) and (lat_max < self.test['lat_max_threshold']):
-                        if (old_div((self.get_pps(speed,size) - pps_tx),self.get_pps(speed,size)))>0.01:
-                            speed_prefix = bcolors.WARNING
-                            if abs_tx_fail > 0:
-                                gen_warning = bcolors.WARNING + ' Network limit?: requesting {:<.3f} Mpps and getting {:<.3f} Mpps - {} failed to be transmitted'.format(self.get_pps(speed,size), pps_tx, abs_tx_fail) + bcolors.ENDC
-                            else:
-                                gen_warning = bcolors.WARNING + ' Generator limit?: requesting {:<.3f} Mpps and getting {:<.3f} Mpps'.format(self.get_pps(speed,size), pps_tx) + bcolors.ENDC
-                        else:
-                            speed_prefix = bcolors.ENDC
-                            gen_warning = ''
-                        endspeed = speed
-                        endspeed_prefix = speed_prefix
-                        endpps_req_tx = pps_req_tx
-                        endpps_tx = pps_tx
-                        endpps_sut_tx = pps_sut_tx
-                        endpps_rx = pps_rx
-                        endlat_avg = lat_avg
-                        endlat_perc = lat_perc
-                        endlat_perc_max = lat_perc_max
-                        endlat_max = lat_max
-                        endbuckets = buckets
-                        endabs_dropped = None
-                        enddrop_rate = drop_rate
-                        endabs_tx = abs_tx
-                        endabs_rx = abs_rx
-                        endavg_bg_rate = avg_bg_rate
-                        if lat_warning or gen_warning or retry_warning:
-                            endwarning = '|        | {:186.186} |'.format(retry_warning + lat_warning + gen_warning)
+                    elif ((self.get_pps(speed,size) - iteration_data['pps_tx']) / self.get_pps(speed,size)) \
+                            < self.test['generator_threshold'] and \
+                         ((iteration_data['drop_rate'] < self.test['drop_rate_threshold']) or \
+                            (iteration_data['abs_dropped']==self.test['drop_rate_threshold']==0)) and \
+                         (iteration_data['lat_avg']< self.test['lat_avg_threshold']) and \
+                         (iteration_data['lat_perc']< self.test['lat_perc_threshold']) and \
+                         (iteration_data['lat_max'] < self.test['lat_max_threshold'] and \
+                            iteration_data['mis_ordered'] <= self.test['mis_ordered_threshold']):
+                        end_data = copy.deepcopy(iteration_data)
+                        end_prefix = copy.deepcopy(iteration_prefix)
                         success = True
                         success_message=' SUCCESS'
-                        speed_prefix = lat_avg_prefix = lat_perc_prefix = lat_max_prefix = abs_drop_rate_prefix = drop_rate_prefix = bcolors.ENDC
-                        RapidLog.debug(self.report_result(-attempts,size,speed,pps_req_tx,pps_tx,pps_sut_tx,pps_rx,lat_avg,lat_perc,lat_perc_max,lat_max,abs_tx,abs_rx,abs_dropped,actual_duration,speed_prefix,lat_avg_prefix,lat_max_prefix,abs_drop_rate_prefix,drop_rate_prefix)+ success_message + retry_warning + lat_warning + gen_warning)
+                        if (old_div((self.get_pps(speed,size) - iteration_data['pps_tx']),self.get_pps(speed,size)))>0.01:
+                            iteration_prefix['speed'] = bcolors.WARNING
+                            if iteration_data['abs_tx_fail'] > 0:
+                                gen_warning = bcolors.WARNING + ' Network limit?: requesting {:<.3f} Mpps and getting {:<.3f} Mpps - {} failed to be transmitted'.format(self.get_pps(speed,size), iteration_data['pps_tx'], iteration_data['abs_tx_fail']) + bcolors.ENDC
+                            else:
+                                gen_warning = bcolors.WARNING + ' Generator limit?: requesting {:<.3f} Mpps and getting {:<.3f} Mpps'.format(self.get_pps(speed,size), iteration_data['pps_tx']) + bcolors.ENDC
+                            endwarning = '|        | {:186.186} |'.format(retry_warning + lat_warning + gen_warning)
+                            RapidLog.debug(self.report_result(-attempts, size,
+                                iteration_data, iteration_prefix) + success_message +
+                                retry_warning + lat_warning + gen_warning)
+                            break
+                        else:
+                            iteration_prefix['speed'] = bcolors.ENDC
+                            gen_warning = ''
+                            if lat_warning or retry_warning:
+                                endwarning = '|        | {:186.186} |'.format(retry_warning + lat_warning)
+                            RapidLog.debug(self.report_result(-attempts, size,
+                                iteration_data, iteration_prefix) + success_message +
+                                retry_warning + lat_warning + gen_warning)
                     else:
                         success_message=' FAILED'
-                        abs_drop_rate_prefix = bcolors.ENDC
-                        if ((abs_dropped>0) and (self.test['drop_rate_threshold'] ==0)):
-                            abs_drop_rate_prefix = bcolors.FAIL
-                        if (drop_rate < self.test['drop_rate_threshold']):
-                            drop_rate_prefix = bcolors.ENDC
+                        if ((iteration_data['abs_dropped']>0) and (self.test['drop_rate_threshold'] ==0)):
+                            iteration_prefix['abs_drop_rate'] = bcolors.FAIL
+                        if (iteration_data['drop_rate'] <= self.test['drop_rate_threshold']):
+                            iteration_prefix['drop_rate'] = bcolors.ENDC
                         else:
-                            drop_rate_prefix = bcolors.FAIL
-                        if (lat_avg< self.test['lat_avg_threshold']):
-                            lat_avg_prefix = bcolors.ENDC
+                            iteration_prefix['drop_rate'] = bcolors.FAIL
+                        if (iteration_data['lat_avg']< self.test['lat_avg_threshold']):
+                            iteration_prefix['lat_avg'] = bcolors.ENDC
                         else:
-                            lat_avg_prefix = bcolors.FAIL
-                        if (lat_perc< self.test['lat_perc_threshold']):
-                            lat_perc_prefix = bcolors.ENDC
+                            iteration_prefix['lat_avg'] = bcolors.FAIL
+                        if (iteration_data['lat_perc']< self.test['lat_perc_threshold']):
+                            iteration_prefix['lat_perc'] = bcolors.ENDC
                         else:
-                            lat_perc_prefix = bcolors.FAIL
-                        if (lat_max< self.test['lat_max_threshold']):
-                            lat_max_prefix = bcolors.ENDC
+                            iteration_prefix['lat_perc'] = bcolors.FAIL
+                        if (iteration_data['lat_max']< self.test['lat_max_threshold']):
+                            iteration_prefix['lat_max'] = bcolors.ENDC
                         else:
-                            lat_max_prefix = bcolors.FAIL
-                        if ((old_div((self.get_pps(speed,size) - pps_tx),self.get_pps(speed,size)))<0.001):
-                            speed_prefix = bcolors.ENDC
+                            iteration_prefix['lat_max'] = bcolors.FAIL
+                        if ((old_div((self.get_pps(speed,size) - iteration_data['pps_tx']),self.get_pps(speed,size)))<0.001):
+                            iteration_prefix['speed'] = bcolors.ENDC
                         else:
-                            speed_prefix = bcolors.FAIL
+                            iteration_prefix['speed'] = bcolors.FAIL
+                        if (iteration_data['mis_ordered']< self.test['mis_ordered_threshold']):
+                            iteration_prefix['mis_ordered'] = bcolors.ENDC
+                        else:
+                            iteration_prefix['mis_ordered'] = bcolors.FAIL
+
                         success = False 
-                        RapidLog.debug(self.report_result(-attempts,size,speed,pps_req_tx,pps_tx,pps_sut_tx,pps_rx,lat_avg,lat_perc,lat_perc_max,lat_max,abs_tx,abs_rx,abs_dropped,actual_duration,speed_prefix,lat_avg_prefix,lat_perc_prefix,lat_max_prefix,abs_drop_rate_prefix,drop_rate_prefix)+ success_message + retry_warning + lat_warning)
+                        RapidLog.debug(self.report_result(-attempts, size,
+                            iteration_data, iteration_prefix) +
+                            success_message + retry_warning + lat_warning)
                     speed = self.new_speed(speed, size, success)
                     if self.test['test'] == 'increment_till_fail':
                         if not success:
                             break
                     elif self.resolution_achieved():
                         break
-                self.record_stop_time()
-                if endspeed is not None:
-                    if TestPassed and (endpps_rx < self.test['pass_threshold']):
-                        TestPassed = False
-                    speed_prefix = lat_avg_prefix = lat_perc_prefix = lat_max_prefix = abs_drop_rate_prefix = drop_rate_prefix = bcolors.ENDC
-                    RapidLog.info(self.report_result(flow_number,size,endspeed,endpps_req_tx,endpps_tx,endpps_sut_tx,endpps_rx,endlat_avg,endlat_perc,endlat_perc_max,endlat_max,endabs_tx,endabs_rx,endabs_dropped,actual_duration,speed_prefix,lat_avg_prefix,lat_perc_prefix,lat_max_prefix,abs_drop_rate_prefix,drop_rate_prefix))
-                    if endavg_bg_rate:
-                        tot_avg_rx_rate = endpps_rx + (endavg_bg_rate * len(self.background_machines))
-                        endtotaltrafficrate = '|        | Total amount of traffic received by all generators during this test: {:>4.3f} Gb/s {:7.3f} Mpps {} |'.format(RapidTest.get_speed(tot_avg_rx_rate,size) , tot_avg_rx_rate, ' '*84)
-                        RapidLog.info (endtotaltrafficrate)
-                    if endwarning:
-                        RapidLog.info (endwarning)
-                    RapidLog.info("+--------+------------------+-------------+-------------+-------------+------------------------+----------+----------+----------+-----------+-----------+-----------+-----------+-------+----+")
-                    if self.test['test'] != 'fixed_rate':
-                        result_details = {'test': self.test['testname'],
-                                'environment_file': self.test['environment_file'],
-                                'start_date': self.start,
-                                'stop_date': self.stop,
-                                'Flows': flow_number,
-                                'Size': size,
-                                'RequestedSpeed': RapidTest.get_pps(endspeed,size),
-                                'CoreGenerated': endpps_req_tx,
-                                'SentByNIC': endpps_tx,
-                                'FwdBySUT': endpps_sut_tx,
-                                'RevByCore': endpps_rx,
-                                'AvgLatency': endlat_avg,
-                                'PCTLatency': endlat_perc,
-                                'MaxLatency': endlat_max,
-                                'PacketsSent': endabs_tx,
-                                'PacketsReceived': endabs_rx,
-                                'PacketsLost': endabs_dropped,
-                                'bucket_size': bucket_size,
-                                'buckets': endbuckets}
-                        self.post_data('rapid_flowsizetest', result_details)
-                else:
-                    RapidLog.info('|{:>7}'.format(str(flow_number))+" | Speed 0 or close to 0")
-        self.gen_machine.stop_latency_cores()
-        return (TestPassed,result_details)
+                if end_data['speed'] is None:
+                    end_data = iteration_data
+                    end_prefix = iteration_prefix
+                    RapidLog.info('|{:>7} | {:<177} |'.format("FAILED","Speed 0 or close to 0, data for last failed step below:"))
+                RapidLog.info(self.report_result(flow_number, size,
+                    end_data, end_prefix))
+                if end_data['avg_bg_rate']:
+                    tot_avg_rx_rate = end_data['pps_rx'] + (end_data['avg_bg_rate'] * len(self.background_machines))
+                    endtotaltrafficrate = '|        | Total amount of traffic received by all generators during this test: {:>4.3f} Gb/s {:7.3f} Mpps {} |'.format(RapidTest.get_speed(tot_avg_rx_rate,size) , tot_avg_rx_rate, ' '*84)
+                    RapidLog.info (endtotaltrafficrate)
+                if endwarning:
+                    RapidLog.info (endwarning)
+                if self.test['test'] != 'fixed_rate':
+                    TestResult = TestResult + end_data['pps_rx']
+                    end_data['test'] = self.test['testname']
+                    end_data['environment_file'] = self.test['environment_file']
+                    end_data['Flows'] = flow_number
+                    end_data['Size'] = size
+                    end_data['RequestedSpeed'] = RapidTest.get_pps(end_data['speed'] ,size)
+                    result_details = self.post_data(end_data)
+                    RapidLog.debug(result_details)
+                RapidLog.info('+' + '-' * 8 + '+' + '-' * 18 + '+' + '-' * 13 +
+                    '+' + '-' * 13 + '+' + '-' * 13 + '+' + '-' * 24 + '+' +
+                    '-' * 10 + '+' + '-' * 10 + '+' + '-' * 10 + '+' + '-' * 11
+                    + '+' + '-' * 11 + '+' + '-' * 11 + '+'  + '-' * 11 +  '+'
+                    + '+' + '-' * 11 + '+'
+                    + '-' * 7 + '+' + '-' * 4 + '+')
+        return (TestResult, result_details)

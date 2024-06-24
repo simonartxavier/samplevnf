@@ -32,9 +32,17 @@
 #include "prox_cksum.h"
 #include "prox_compat.h"
 
+#define MAX_STORE_PKT_SIZE	2048
+
+struct packet {
+	unsigned int len;
+	unsigned char buf[MAX_STORE_PKT_SIZE];
+};
+
 struct task_swap {
 	struct task_base base;
 	struct rte_mempool *igmp_pool;
+	uint32_t flags;
 	uint32_t runtime_flags;
 	uint32_t igmp_address;
 	uint8_t src_dst_mac[12];
@@ -44,34 +52,40 @@ struct task_swap {
 	uint64_t last_echo_rep_rcvd_tsc;
 	uint32_t n_echo_req;
 	uint32_t n_echo_rep;
+	uint32_t store_pkt_id;
+	uint32_t store_msk;
+	struct packet *store_buf;
+	FILE *fp;
 };
 
 #define NB_IGMP_MBUF  		1024
 #define IGMP_MBUF_SIZE 		2048
 #define NB_CACHE_IGMP_MBUF  	256
 
+#define GENEVE_PORT		0xc117 // in be
+
 static void write_src_and_dst_mac(struct task_swap *task, struct rte_mbuf *mbuf)
 {
 	prox_rte_ether_hdr *hdr;
 	prox_rte_ether_addr mac;
 
-	if (unlikely((task->runtime_flags & (TASK_ARG_DST_MAC_SET|TASK_ARG_SRC_MAC_SET)) == (TASK_ARG_DST_MAC_SET|TASK_ARG_SRC_MAC_SET))) {
+	if (unlikely((task->flags & (TASK_ARG_DST_MAC_SET|TASK_ARG_SRC_MAC_SET)) == (TASK_ARG_DST_MAC_SET|TASK_ARG_SRC_MAC_SET))) {
 		/* Source and Destination mac hardcoded */
 		hdr = rte_pktmbuf_mtod(mbuf, prox_rte_ether_hdr *);
               	rte_memcpy(hdr, task->src_dst_mac, sizeof(task->src_dst_mac));
 	} else {
 		hdr = rte_pktmbuf_mtod(mbuf, prox_rte_ether_hdr *);
-		if (unlikely((task->runtime_flags & TASK_ARG_SRC_MAC_SET) == 0)) {
+		if (unlikely((task->flags & TASK_ARG_SRC_MAC_SET) == 0)) {
 			/* dst mac will be used as src mac */
 			prox_rte_ether_addr_copy(&hdr->d_addr, &mac);
 		}
 
-		if (unlikely(task->runtime_flags & TASK_ARG_DST_MAC_SET))
+		if (unlikely(task->flags & TASK_ARG_DST_MAC_SET))
 			prox_rte_ether_addr_copy((prox_rte_ether_addr *)&task->src_dst_mac[0], &hdr->d_addr);
 		else
 			prox_rte_ether_addr_copy(&hdr->s_addr, &hdr->d_addr);
 
-		if (likely(task->runtime_flags & TASK_ARG_SRC_MAC_SET)) {
+		if (likely(task->flags & TASK_ARG_SRC_MAC_SET)) {
 			prox_rte_ether_addr_copy((prox_rte_ether_addr *)&task->src_dst_mac[6], &hdr->s_addr);
 		} else {
 			prox_rte_ether_addr_copy(&mac, &hdr->s_addr);
@@ -136,10 +150,33 @@ static inline void build_igmp_message(struct task_base *tbase, struct rte_mbuf *
 
 static void stop_swap(struct task_base *tbase)
 {
+	uint32_t i, j;
 	struct task_swap *task = (struct task_swap *)tbase;
+
 	if (task->igmp_pool) {
 		rte_mempool_free(task->igmp_pool);
 		task->igmp_pool = NULL;
+	}
+
+	if (task->store_msk) {
+		for (i = task->store_pkt_id & task->store_msk; i < task->store_msk + 1; i++) {
+			if (task->store_buf[i].len) {
+				fprintf(task->fp, "%06d: ", i);
+				for (j = 0; j < task->store_buf[i].len; j++) {
+					fprintf(task->fp, "%02x ", task->store_buf[i].buf[j]);
+				}
+				fprintf(task->fp, "\n");
+			}
+		}
+		for (i = 0; i < (task->store_pkt_id & task->store_msk); i++) {
+			if (task->store_buf[i].len) {
+				fprintf(task->fp, "%06d: ", i);
+				for (j = 0; j < task->store_buf[i].len; j++) {
+					fprintf(task->fp, "%02x ", task->store_buf[i].buf[j]);
+				}
+				fprintf(task->fp, "\n");
+			}
+		}
 	}
 }
 
@@ -196,6 +233,9 @@ static int handle_swap_bulk(struct task_base *tbase, struct rte_mbuf **mbufs, ui
 	struct igmpv2_hdr *pigmp;
 	prox_rte_icmp_hdr *picmp;
 	uint8_t type;
+	static int llc_printed = 0;
+	static int lldp_printed = 0;
+	static int geneve_printed = 0;
 
 	for (j = 0; j < n_pkts; ++j) {
 		PREFETCH0(mbufs[j]);
@@ -279,9 +319,31 @@ static int handle_swap_bulk(struct task_base *tbase, struct rte_mbuf **mbufs, ui
 			handle_ipv6(task, mbufs[j], ipv6_hdr, &out[j]);
 			continue;
 		case ETYPE_LLDP:
+			if (!lldp_printed) {
+				plog_info("Discarding LLDP packets (only printed once)\n");
+				lldp_printed = 1;
+			}
 			out[j] = OUT_DISCARD;
 			continue;
 		default:
+			if ((rte_bswap16(hdr->ether_type) < 0x600) && (rte_bswap16(hdr->ether_type) >= 16)) {
+				// 802.3
+				struct prox_llc {
+					uint8_t dsap;
+					uint8_t lsap;
+					uint8_t control;
+				};
+				struct prox_llc *llc = (struct prox_llc *)(hdr + 1);
+				if ((llc->dsap == 0x42) && (llc->lsap == 0x42)) {
+					// STP Protocol
+					out[j] = OUT_DISCARD;
+					if (!llc_printed) {
+						plog_info("Discarding STP packets (only printed once)\n");
+						llc_printed = 1;
+					}
+					continue;
+				}
+			}
 			plog_warn("Unsupported ether_type 0x%x\n", hdr->ether_type);
 			out[j] = OUT_DISCARD;
 			continue;
@@ -320,10 +382,19 @@ static int handle_swap_bulk(struct task_base *tbase, struct rte_mbuf **mbufs, ui
 				continue;
 			}
 			udp_hdr = (prox_rte_udp_hdr *)(ip_hdr + 1);
+			port = udp_hdr->dst_port;
 			ip_hdr->dst_addr = ip_hdr->src_addr;
 			ip_hdr->src_addr = ip;
 
-			port = udp_hdr->dst_port;
+			if ((port == GENEVE_PORT) && (task->runtime_flags & TASK_DO_NOT_FWD_GENEVE)) {
+				if (!geneve_printed) {
+					plog_info("Discarding geneve (only printed once)\n");
+					geneve_printed = 1;
+				}
+				out[j] = OUT_DISCARD;
+				continue;
+			}
+
 			udp_hdr->dst_port = udp_hdr->src_port;
 			udp_hdr->src_port = port;
 			write_src_and_dst_mac(task, mbufs[j]);
@@ -391,6 +462,16 @@ static int handle_swap_bulk(struct task_base *tbase, struct rte_mbuf **mbufs, ui
 			plog_warn("Unsupported IP protocol 0x%x\n", ip_hdr->next_proto_id);
 			out[j] = OUT_DISCARD;
 			continue;
+		}
+	}
+	if (task->store_msk) {
+		for (int i = 0; i < n_pkts; i++) {
+			if (out[i] != OUT_DISCARD) {
+				hdr = rte_pktmbuf_mtod(mbufs[i], prox_rte_ether_hdr *);
+				memcpy(&task->store_buf[task->store_pkt_id & task->store_msk].buf, hdr, rte_pktmbuf_pkt_len(mbufs[i]));
+				task->store_buf[task->store_pkt_id & task->store_msk].len = rte_pktmbuf_pkt_len(mbufs[i]);
+				task->store_pkt_id++;
+			}
 		}
 	}
 	return task->base.tx_pkt(&task->base, mbufs, n_pkts, out);
@@ -472,7 +553,8 @@ static void init_task_swap(struct task_base *tbase, struct task_args *targ)
 			plog_info("\t\tCore %d: src mac set from port\n", targ->lconf->id);
 		}
 	}
-	task->runtime_flags = targ->flags;
+	task->flags = targ->flags;
+	task->runtime_flags = targ->runtime_flags;
 	task->igmp_address =  rte_cpu_to_be_32(targ->igmp_address);
 	if (task->igmp_pool == NULL) {
 		static char name[] = "igmp0_pool";
@@ -490,7 +572,19 @@ static void init_task_swap(struct task_base *tbase, struct task_args *targ)
 
 	struct prox_port_cfg *port = find_reachable_port(targ);
 	if (port) {
-		task->offload_crc = port->requested_tx_offload & (DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM);
+		task->offload_crc = port->requested_tx_offload & (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM);
+	}
+	task->store_pkt_id = 0;
+	if (targ->store_max) {
+		char filename[256];
+		sprintf(filename, "swap_buf_%02d_%02d", targ->lconf->id, targ->task);
+
+		task->store_msk = targ->store_max - 1;
+		task->store_buf = (struct packet *)malloc(sizeof(struct packet) * targ->store_max);
+		task->fp = fopen(filename, "w+");
+		PROX_PANIC(task->fp == NULL, "Unable to open %s\n", filename);
+	} else {
+		task->store_msk = 0;
 	}
 }
 

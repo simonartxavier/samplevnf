@@ -7,63 +7,99 @@
   part2: test
   part3: /instance/
   part4: environment_file
-;rapid_flowsizetest:
+;FlowsizeTest:
   Flows: Flows 
   Size: Size
   RequestedSpeed: RequestedSpeed
-  CoreGenerated: CoreGenerated
-  SentByNIC: SentByNIC
-  FwdBySUT: FwdBySUT
-  RevByCore: RevByCore
-  AvgLatency: AvgLatency
-  PCTLatency: PCTLatency
-  MaxLatency: MaxLatency
-  PacketsSent: PacketsSent
-  PacketsReceived: PacketsReceived
-  PacketsLost: PacketsLost
-rapid_flowsizetest:
-  project_name: "cirv"
-  scenario: "rapid"
-  start_date: start_date
-  stop_date: stop_date
-  case_name: test
-  pod_name: "intel-pod10"
-  installer: "Fuel"
-  version: "1.0"
-  build_tag: "none"
-  criteria: "PASS"
-  details:
-    Flows: Flows 
-    Size: Size
-    Speed (Mpps):
-      RequestedSpeed: RequestedSpeed
-      CoreGenerated: CoreGenerated
-      SentByNIC: SentByNIC
-      FwdBySUT: FwdBySUT
-      RevByCore: RevByCore
-    Latency (usec):
-      AvgLatency: AvgLatency
-      PCTLatency: PCTLatency
-      MaxLatency: MaxLatency
-      Distribution:
-        bucket_size: bucket_size
-        buckets: buckets
-    Absolute Packet Count:
-      PacketsSent: PacketsSent
-      PacketsReceived: PacketsReceived
-      PacketsLost: PacketsLost
-rapid_irqtest:
-  Core: Core 
-  LessThan1us   : B1
-  LessThan5us   : B5
-  LessThan10us  : B10
-  LessThan50us  : B50
-  LessThan100us : B100
-  LessThan500us : B500
-  LessThan1ms   : B1000
-  LessThan5ms   : B5000
-  LessThan10ms  : B10000
-  LessThan50ms  : B50000
-  LessThan100ms : B100000
-  LessThan500ms : B500000
-  MoreThan500ms : BM500000
+  CoreGenerated: pps_req_tx
+  SentByNIC: pps_tx
+  FwdBySUT: pps_sut_tx
+  RevByCore: pps_rx
+  AvgLatency: lat_avg
+  PCTLatency: lat_perc
+  MinLatency: lat_min
+  MaxLatency: lat_max
+  Sent: abs_tx
+  Received: abs_rx
+  Lost: abs_dropped
+  Misordered: mis_ordered
+  Extent: extent
+  Duplicated: duplicate
+FlowSizeTest:
+  Environment: environment_file
+  Test: test
+  Flows: Flows 
+  Size: Size
+  Speed (Mpps):
+    RequestedSpeed: RequestedSpeed
+    CoreGenerated: pps_req_tx
+    SentByNIC: pps_tx
+    FwdBySUT: pps_sut_tx
+    RevByCore: pps_rx
+  Latency (usec):
+    AvgLatency: lat_avg
+    PCTLatency: lat_perc
+    MinLatency: lat_min
+    MaxLatency: lat_max
+    Distribution:
+      bucket_size: bucket_size
+      buckets: buckets
+  Absolute Packet Count:
+    Sent: abs_tx
+    Received: abs_rx
+    Lost: abs_dropped
+  Re-ordering:
+    Misordered: mis_ordered
+    Extent: extent
+    Duplicated: duplicate
+IrqTest:
+  Environment: environment_file
+  Test: test
+  Buckets: buckets
+  Machine_data: machine_data
+ImpairTest:
+  Environment: environment_file
+  Test: test
+  Flows: Flows 
+  Size: Size
+  Speed (Mpps):
+    RequestedSpeed: RequestedSpeed
+    CoreGenerated: pps_req_tx
+    SentByNIC: pps_tx
+    FwdBySUT: pps_sut_tx
+    RevByCore: pps_rx
+  Latency (usec):
+    AvgLatency: lat_avg
+    PCTLatency: lat_perc
+    MinLatency: lat_min
+    MaxLatency: lat_max
+    Distribution:
+      bucket_size: bucket_size
+      buckets: buckets
+  Absolute Packet Count:
+    Sent: abs_tx
+    Received: abs_rx
+    Lost: abs_dropped
+  Re-ordering:
+    Misordered: mis_ordered
+    Extent: extent
+    Duplicated: duplicate
+CoreStatsTest:
+  Environment: environment_file
+  Test: test
+  PROXID: PROXID
+  StepSize: StepSize
+  Received: Received
+  Sent: Sent
+  NonDPReceived: NonDPReceived
+  NonDPSent: NonDPSent
+  Dropped: Dropped
+PortStatsTest:
+  Environment: environment_file
+  Test: test
+  PROXID: PROXID
+  StepSize: StepSize
+  Received: Received
+  Sent: Sent
+  NoMbufs: NoMbufs
+  iErrMiss: iErrMiss

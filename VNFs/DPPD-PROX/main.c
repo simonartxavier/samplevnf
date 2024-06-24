@@ -307,7 +307,7 @@ static void configure_if_tx_queues(struct task_args *targ, uint8_t socket)
 		}
 #else
 		if (chain_flag_always_set(targ, TASK_FEATURE_TXQ_FLAGS_NOOFFLOADS)) {
-			prox_port_cfg[if_port].requested_tx_offload &= ~(DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM);
+			prox_port_cfg[if_port].requested_tx_offload &= ~(RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM);
 		}
 #endif
 	}
@@ -425,12 +425,12 @@ static void configure_tx_queue_flags(void)
                                 prox_port_cfg[if_port].tx_conf.txq_flags |= ETH_TXQ_FLAGS_NOREFCOUNT;
                         }
 #else
-                        /* Set the DEV_TX_OFFLOAD_MBUF_FAST_FREE flag if none of
+                        /* Set the RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE flag if none of
                         the tasks up to the task transmitting to the port
                         use refcnt and per-queue all mbufs comes from the same mempool. */
                         if (chain_flag_never_set(targ, TASK_FEATURE_TXQ_FLAGS_REFCOUNT)) {
                                 if (chain_flag_never_set(targ, TASK_FEATURE_TXQ_FLAGS_MULTIPLE_MEMPOOL))
-                                        prox_port_cfg[if_port].requested_tx_offload |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+                                        prox_port_cfg[if_port].requested_tx_offload |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
                         }
 #endif
                 }
@@ -455,7 +455,7 @@ static void configure_multi_segments(void)
 #else
 			// We enable "multi segment" if at least one task requires it in the chain of tasks.
 			if (chain_flag_sometimes_set(targ, TASK_FEATURE_TXQ_FLAGS_MULTSEGS)) {
-				prox_port_cfg[if_port].requested_tx_offload |= DEV_TX_OFFLOAD_MULTI_SEGS;
+				prox_port_cfg[if_port].requested_tx_offload |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 			}
 #endif
 		}
@@ -856,7 +856,7 @@ static void setup_mempool_for_rx_task(struct lcore_cfg *lconf, struct task_args 
 		sprintf(name, "core_%u_task_%u_pool", lconf->id, targ->id);
 	}
 
-	snprintf(memzone_name, sizeof(memzone_name)-1, "MP_%s", targ->pool_name);
+	snprintf(memzone_name, sizeof(memzone_name), "MP_%.*s", (int)(sizeof(memzone_name)-4), targ->pool_name);
 	mz = rte_memzone_lookup(memzone_name);
 
 	if (mz != NULL) {
@@ -1192,7 +1192,7 @@ static void set_term_env(void)
 		plog_info("\tncurses version = %d.%d (%s)\n", max_ver, min_ver, ncurses_version);
 	}
 
-	if (((max_ver > 6) || ((max_ver == 6) && (min_ver >= 1))) && (strcmp(old_value, "xterm") == 0)) {
+	if ((old_value) && ((max_ver > 6) || ((max_ver == 6) && (min_ver >= 1))) && (strcmp(old_value, "xterm") == 0)) {
 		// On recent OSes such as RHEL 8.0, ncurses(6.1)  introduced support
 		// for ECMA-48 repeat character control.
 		// Some terminal emulators use TERM=xterm but do not support this feature.

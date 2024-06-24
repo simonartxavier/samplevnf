@@ -15,16 +15,15 @@
 ##
 
 [DEFAULT]
-total_number_of_pods=3
+total_number_of_pods=2
+namespace=rapid-testing
 
 [POD1]
 nodeSelector_hostname=k8s-node1
 dp_ip=192.168.30.11
+dp_subnet=24
 
 [POD2]
 nodeSelector_hostname=k8s-node2
 dp_ip=192.168.30.12
-
-[POD3]
-nodeSelector_hostname=k8s-node2
-dp_ip=192.168.30.13
+dp_subnet=24

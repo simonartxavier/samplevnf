@@ -2,7 +2,9 @@ parameters:
   public_net_name: admin_floating_net
   data_net_name: dataplane-network
   PROX_image: rapidVM
+  PROX_key: rapid_rsa_key
   my_availability_zone: nova
   security_group: prox_security_group
-  PROXVM_count: 4
-  PROX2VM_count: 0
+  PROXType1VM_count: 3
+  PROXType2VM_count: 0
+  PROXType3VM_count: 0

@@ -41,7 +41,7 @@
 #include "ip_subnet.h"
 
 #define MAX_RTE_ARGV 64
-#define MAX_ARG_LEN  64
+#define MAX_ARG_LEN  256
 
 struct cfg_depr {
 	const char *opt;
@@ -542,6 +542,9 @@ static int get_port_cfg(unsigned sindex, char *str, void *data)
 	else if (STR_EQ(str, "tx desc")) {
 		return parse_int(&cfg->n_txd, pkey);
 	}
+	else if (STR_EQ(str, "ipv6 mask length")) {
+		return parse_int(&cfg->v6_mask_length, pkey);
+	}
 	else if (STR_EQ(str, "all_rx_queues")) {
 		uint32_t val;
 		if (parse_bool(&val, pkey)) {
@@ -607,18 +610,18 @@ static int get_port_cfg(unsigned sindex, char *str, void *data)
 		if (parse_bool(&val, pkey)) {
 			return -1;
 		}
-#if defined(DEV_RX_OFFLOAD_CRC_STRIP)
+#if defined(RTE_ETH_RX_OFFLOAD_CRC_STRIP)
 		if (val)
-			cfg->requested_rx_offload |= DEV_RX_OFFLOAD_CRC_STRIP;
+			cfg->requested_rx_offload |= RTE_ETH_RX_OFFLOAD_CRC_STRIP;
 		else
-			cfg->requested_rx_offload &= ~DEV_RX_OFFLOAD_CRC_STRIP;
+			cfg->requested_rx_offload &= ~RTE_ETH_RX_OFFLOAD_CRC_STRIP;
 #else
-#if defined (DEV_RX_OFFLOAD_KEEP_CRC)
+#if defined (RTE_ETH_RX_OFFLOAD_KEEP_CRC)
 		if (val)
-			cfg->requested_rx_offload &= ~DEV_RX_OFFLOAD_KEEP_CRC;
+			cfg->requested_rx_offload &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 		else
+			cfg->requested_rx_offload |= RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 #endif
-			cfg->requested_rx_offload |= DEV_RX_OFFLOAD_KEEP_CRC;
 #endif
 
 	}
@@ -632,11 +635,11 @@ static int get_port_cfg(unsigned sindex, char *str, void *data)
 			return -1;
 		}
 		if (val) {
-			cfg->requested_rx_offload |= DEV_RX_OFFLOAD_VLAN_STRIP;
-			cfg->requested_tx_offload |= DEV_TX_OFFLOAD_VLAN_INSERT;
+			cfg->requested_rx_offload |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+			cfg->requested_tx_offload |= RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
 		} else {
-			cfg->requested_rx_offload &= ~DEV_RX_OFFLOAD_VLAN_STRIP;
-			cfg->requested_tx_offload &= ~DEV_TX_OFFLOAD_VLAN_INSERT;
+			cfg->requested_rx_offload &= ~RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+			cfg->requested_tx_offload &= ~RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
 		}
 #else
 		plog_warn("vlan option not supported : update DPDK at least to 18.08 to support this option\n");
@@ -652,10 +655,14 @@ static int get_port_cfg(unsigned sindex, char *str, void *data)
 			// A frame of 1526 bytes (1500 bytes mtu, 14 bytes hdr, 4 bytes crc and 8 bytes vlan)
 			// should not be considered as a jumbo frame. However rte_ethdev.c considers that
 			// the max_rx_pkt_len for a non jumbo frame is 1518
+#if RTE_VERSION < RTE_VERSION_NUM(21,11,0,0)
 			cfg->port_conf.rxmode.max_rx_pkt_len = cfg->mtu + PROX_RTE_ETHER_HDR_LEN + PROX_RTE_ETHER_CRC_LEN;
-			if (cfg->port_conf.rxmode.max_rx_pkt_len > PROX_RTE_ETHER_MAX_LEN) {
-				cfg->requested_rx_offload |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-			}
+			if (cfg->port_conf.rxmode.max_rx_pkt_len > PROX_RTE_ETHER_MAX_LEN)
+#else
+			cfg->port_conf.rxmode.mtu = cfg->mtu;
+			if (cfg->port_conf.rxmode.mtu > PROX_MTU)
+#endif
+				cfg->requested_rx_offload |= RTE_ETH_RX_OFFLOAD_JUMBO_FRAME;
 		}
 	}
 
@@ -665,8 +672,8 @@ static int get_port_cfg(unsigned sindex, char *str, void *data)
 			return -1;
 		}
 		if (val) {
-			cfg->port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
-			cfg->port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IPV4;
+			cfg->port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+			cfg->port_conf.rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_IPV4;
 		}
 	}
 	else if (STR_EQ(str, "rx_ring")) {
@@ -920,6 +927,9 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 		return parse_flag(&targ->runtime_flags, TASK_FP_HANDLE_ARP, pkey);
 	}
 
+	if (STR_EQ(str, "do not forward geneve")) {
+		return parse_flag(&targ->runtime_flags, TASK_DO_NOT_FWD_GENEVE, pkey);
+	}
 	/* Using tx port name, only a _single_ port can be assigned to a task. */
 	if (STR_EQ(str, "tx port")) {
 		if (targ->nb_txports > 0) {
@@ -1018,6 +1028,18 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 	}
 	if (STR_EQ(str, "random")) {
 		return parse_str(targ->rand_str[targ->n_rand_str++], pkey, sizeof(targ->rand_str[0]));
+	}
+	if (STR_EQ(str, "range")) {
+		int rc = parse_range(&targ->range[targ->n_ranges].min, &targ->range[targ->n_ranges].max, pkey);
+		targ->n_ranges++;
+		return rc;
+	}
+	if (STR_EQ(str, "range_offset")) {
+		if (targ->n_ranges == 0) {
+			set_errf("No range defined previously (use range=...)");
+			return -1;
+		}
+		return parse_int(&targ->range[targ->n_ranges - 1].offset, pkey);
 	}
 	if (STR_EQ(str, "rand_offset")) {
 		if (targ->n_rand_str == 0) {
@@ -1129,6 +1151,9 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 	if (STR_EQ(str, "latency buffer size")) {
 		return parse_int(&targ->latency_buffer_size, pkey);
 	}
+	if (STR_EQ(str, "loss buffer size")) {
+		return parse_int(&targ->loss_buffer_size, pkey);
+	}
 	if (STR_EQ(str, "accuracy pos")) {
 		return parse_int(&targ->accur_pos, pkey);
 	}
@@ -1144,6 +1169,15 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 	}
 	if (STR_EQ(str, "packet id pos")) {
 		return parse_int(&targ->packet_id_pos, pkey);
+	}
+	if (STR_EQ(str, "flow id pos")) {
+		return parse_int(&targ->flow_id_pos, pkey);
+	}
+	if (STR_EQ(str, "packet id in flow pos")) {
+		return parse_int(&targ->packet_id_in_flow_pos, pkey);
+	}
+	if (STR_EQ(str, "flow count")) {
+		return parse_int(&targ->flow_count, pkey);
 	}
 	if (STR_EQ(str, "probability")) { // old - use "probability no drop" instead
 		float probability;
@@ -1587,6 +1621,8 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 		return parse_int(&targ->arp_ndp_retransmit_timeout, pkey);
 	if (STR_EQ(str, "number of packets"))
 		return parse_int(&targ->n_pkts, pkey);
+	if (STR_EQ(str, "store size"))
+		return parse_int(&targ->store_max, pkey);
 	if (STR_EQ(str, "pipes")) {
 		uint32_t val;
 		int err = parse_int(&val, pkey);
@@ -1620,45 +1656,69 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 		return 0;
 	}
 	if (STR_EQ(str, "subport tb rate")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tb_rate, pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tb_rate, pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tb_rate, pkey);
 #endif
+#endif
 	}
 	if (STR_EQ(str, "subport tb size")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tb_size, pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tb_size, pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tb_size, pkey);
 #endif
+#endif
 	}
 	if (STR_EQ(str, "subport tc 0 rate")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tc_rate[0], pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tc_rate[0], pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tc_rate[0], pkey);
 #endif
+#endif
 	}
 	if (STR_EQ(str, "subport tc 1 rate")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tc_rate[1], pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tc_rate[1], pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tc_rate[1], pkey);
 #endif
+#endif
 	}
 	if (STR_EQ(str, "subport tc 2 rate")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tc_rate[2], pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tc_rate[2], pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tc_rate[2], pkey);
 #endif
+#endif
 	}
 	if (STR_EQ(str, "subport tc 3 rate")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tc_rate[3], pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tc_rate[3], pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tc_rate[3], pkey);
+#endif
 #endif
 	}
 
@@ -1669,18 +1729,29 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 			return -1;
 		}
 
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		targ->qos_conf.port_params.subport_profiles->tc_rate[0] = val;
+		targ->qos_conf.port_params.subport_profiles->tc_rate[1] = val;
+		targ->qos_conf.port_params.subport_profiles->tc_rate[2] = val;
+		targ->qos_conf.port_params.subport_profiles->tc_rate[3] = val;
+#else
 		targ->qos_conf.subport_params[0].tc_rate[0] = val;
 		targ->qos_conf.subport_params[0].tc_rate[1] = val;
 		targ->qos_conf.subport_params[0].tc_rate[2] = val;
 		targ->qos_conf.subport_params[0].tc_rate[3] = val;
+#endif
 
 		return 0;
 	}
 	if (STR_EQ(str, "subport tc period")) {
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+		return parse_u64(&targ->qos_conf.port_params.subport_profiles->tc_period, pkey);
+#else
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 		return parse_u64(&targ->qos_conf.subport_params[0].tc_period, pkey);
 #else
 		return parse_int(&targ->qos_conf.subport_params[0].tc_period, pkey);
+#endif
 #endif
 	}
 	if (STR_EQ(str, "pipe tb rate")) {
@@ -1836,28 +1907,38 @@ static int get_core_cfg(unsigned sindex, char *str, void *data)
 		return parse_int(&targ->n_max_rules, pkey);
 	}
 
-        if (STR_EQ(str, "tunnel hop limit")) {
-                uint32_t val;
-                int err = parse_int(&val, pkey);
-                if (err) {
-                        return -1;
-                }
-                targ->tunnel_hop_limit = val;
-                return 0;
-        }
+	if (STR_EQ(str, "tunnel hop limit")) {
+		uint32_t val;
+		int err = parse_int(&val, pkey);
+		if (err) {
+			return -1;
+		}
+		targ->tunnel_hop_limit = val;
+		return 0;
+	}
 
-        if (STR_EQ(str, "lookup port mask")) {
-                uint32_t val;
-                int err = parse_int(&val, pkey);
-                if (err) {
-                        return -1;
-                }
-                targ->lookup_port_mask = val;
-                return 0;
-        }
+	if (STR_EQ(str, "lookup port mask")) {
+		uint32_t val;
+		int err = parse_int(&val, pkey);
+		if (err) {
+			return -1;
+		}
+		targ->lookup_port_mask = val;
+		return 0;
+	}
 
 	if (STR_EQ(str, "irq debug")) {
 		parse_int(&targ->irq_debug, pkey);
+		return 0;
+	}
+
+	if (STR_EQ(str, "multiplier")) {
+		parse_int(&targ->multiplier, pkey);
+		return 0;
+	}
+
+	if (STR_EQ(str, "mirror size")) {
+		parse_int(&targ->mirror_size, pkey);
 		return 0;
 	}
 
@@ -2219,10 +2300,14 @@ int prox_setup_rte(const char *prog_name)
 	sprintf(rte_arg[++argc], "-c%s", tmp);
 	rte_argv[argc] = rte_arg[argc];
 #if RTE_VERSION >= RTE_VERSION_NUM(1,8,0,0)
+	uint32_t master_core = prox_cfg.master;
 	if (prox_cfg.flags & DSF_USE_DUMMY_CPU_TOPO)
-		sprintf(rte_arg[++argc], "--master-lcore=%u", 0);
-	else
-		sprintf(rte_arg[++argc], "--master-lcore=%u", prox_cfg.master);
+		master_core = 0;
+#if RTE_VERSION < RTE_VERSION_NUM(21,11,0,0)
+	sprintf(rte_arg[++argc], "--master-lcore=%u", master_core);
+#else
+	sprintf(rte_arg[++argc], "--main-lcore=%u", master_core);
+#endif
 	rte_argv[argc] = rte_arg[argc];
 #else
 	/* For old DPDK versions, the master core had to be the first
@@ -2285,7 +2370,7 @@ int prox_setup_rte(const char *prog_name)
 			if (ptr) {
 				*ptr++ = '\0';
 			}
-			strcpy(rte_arg[++argc], ptr2);
+			prox_strncpy(rte_arg[++argc], ptr2, MAX_ARG_LEN);
 			rte_argv[argc] = rte_arg[argc];
 		}
 	}

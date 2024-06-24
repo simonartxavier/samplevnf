@@ -18,12 +18,6 @@
 # Directory for package build
 BUILD_DIR="/opt/rapid"
 DPDK_VERSION="20.05"
-PROX_COMMIT="80dfeb5c734cc4d681f467e853a541a8a91fe1cf"
-PROX_CHECKOUT="git checkout ${PROX_COMMIT}"
-## Next line is overruling the PROX_COMMIT and will replace the version with a very specific patch. Should be commented out
-## 	if you want to use a committed version of PROX with the COMMIT ID specified above
-## As an example: Following line has the commit for testing IMIX, IPV6, ... It is the merge of all PROX commits on May 27th 2020
-#PROX_CHECKOUT="git fetch \"https://gerrit.opnfv.org/gerrit/samplevnf\" refs/changes/23/70223/1 && git checkout FETCH_HEAD"
 MULTI_BUFFER_LIB_VER="0.52"
 export RTE_SDK="${BUILD_DIR}/dpdk-${DPDK_VERSION}"
 export RTE_TARGET="x86_64-native-linuxapp-gcc"
@@ -50,7 +44,8 @@ function os_pkgs_install()
 			 numactl-devel vim tuna openssl-devel wireshark \
 			 make driverctl
 
-	${SUDO} wget https://www.nasm.us/pub/nasm/releasebuilds/2.14.02/linux/nasm-2.14.02-0.fc27.x86_64.rpm
+	${SUDO} wget --no-check-certificate \
+		https://www.nasm.us/pub/nasm/releasebuilds/2.14.02/linux/nasm-2.14.02-0.fc27.x86_64.rpm
 	${SUDO} rpm -ivh nasm-2.14.02-0.fc27.x86_64.rpm
 }
 
@@ -61,6 +56,12 @@ function k8s_os_pkgs_runtime_install()
 	# Install required dynamically linked libraries + required packages
 	${SUDO} yum install -y numactl-libs libpcap openssh openssh-server \
 		  openssh-clients sudo
+
+	# Install additional packets for universal image
+	${SUDO} yum install -y epel-release python3 kubernetes-client
+	${SUDO} yum install -y python3-paramiko python3-future
+	${SUDO} python3 -m pip install --upgrade pip
+	${SUDO} pip3 install scp kubernetes
 }
 
 function os_cfg()
@@ -146,15 +147,15 @@ function dpdk_install()
 	pushd ${RTE_SDK} > /dev/null 2>&1
 	make config T=${RTE_TARGET}
 	# Starting from DPDK 20.05, the IGB_UIO driver is not compiled by default.
-    # Uncomment the sed command to enable the driver compilation
-    #${SUDO} sed -i 's/CONFIG_RTE_EAL_IGB_UIO=n/c\/CONFIG_RTE_EAL_IGB_UIO=y' ${RTE_SDK}/build/.config
+	# Uncomment the sed command to enable the driver compilation
+	#${SUDO} sed -i 's/CONFIG_RTE_EAL_IGB_UIO=n/c\/CONFIG_RTE_EAL_IGB_UIO=y' ${RTE_SDK}/build/.config
 
 	# For Kubernetes environment we use host vfio module
 	if [ "${K8S_ENV}" == "y" ]; then
 		sed -i 's/CONFIG_RTE_EAL_IGB_UIO=y/CONFIG_RTE_EAL_IGB_UIO=n/g' ${RTE_SDK}/build/.config
 		sed -i 's/CONFIG_RTE_LIBRTE_KNI=y/CONFIG_RTE_LIBRTE_KNI=n/g' ${RTE_SDK}/build/.config
 		sed -i 's/CONFIG_RTE_KNI_KMOD=y/CONFIG_RTE_KNI_KMOD=n/g' ${RTE_SDK}/build/.config
-    fi
+	fi
 
 	# Compile with MB library
 	sed -i '/CONFIG_RTE_LIBRTE_PMD_AESNI_MB=n/c\CONFIG_RTE_LIBRTE_PMD_AESNI_MB=y' ${RTE_SDK}/build/.config
@@ -165,23 +166,26 @@ function dpdk_install()
 
 function prox_compile()
 {
-	# Compile PROX
-	pushd ${BUILD_DIR}/samplevnf/VNFs/DPPD-PROX
-	make -j`getconf _NPROCESSORS_ONLN`
-	${SUDO} cp ${BUILD_DIR}/samplevnf/VNFs/DPPD-PROX/build/app/prox ${BUILD_DIR}/prox
-	popd > /dev/null 2>&1
+    # Compile PROX
+    pushd ${BUILD_DIR}/samplevnf/VNFs/DPPD-PROX
+    COMMIT_ID=$(git rev-parse HEAD)
+    echo "${COMMIT_ID}" > ${BUILD_DIR}/commit_id
+    make -j`getconf _NPROCESSORS_ONLN`
+    ${SUDO} cp ${BUILD_DIR}/samplevnf/VNFs/DPPD-PROX/build/app/prox ${BUILD_DIR}/prox
+    popd > /dev/null 2>&1
 }
 
 function prox_install()
 {
-	# Clone and compile PROX
-	pushd ${BUILD_DIR} > /dev/null 2>&1
-	git clone https://git.opnfv.org/samplevnf
-	pushd ${BUILD_DIR}/samplevnf/VNFs/DPPD-PROX > /dev/null 2>&1
-	bash -c "${PROX_CHECKOUT}"
-	popd > /dev/null 2>&1
-	prox_compile
-	popd > /dev/null 2>&1
+    # Clone PROX
+    pushd ${BUILD_DIR} > /dev/null 2>&1
+    git clone https://git.opnfv.org/samplevnf
+    cp -R ./samplevnf/VNFs/DPPD-PROX/helper-scripts/rapid ./src
+    popd > /dev/null 2>&1
+    prox_compile
+
+    # Clean build folder
+    rm -rf ${BUILD_DIR}/samplevnf
 }
 
 function port_info_build()
@@ -200,6 +204,7 @@ function create_minimal_install()
 
 	echo "${BUILD_DIR}/prox" >> ${BUILD_DIR}/list_of_install_components
 	echo "${BUILD_DIR}/port_info_app" >> ${BUILD_DIR}/list_of_install_components
+	echo "${BUILD_DIR}/commit_id" >> ${BUILD_DIR}/list_of_install_components
 
 	tar -czvhf ${BUILD_DIR}/install_components.tgz -T ${BUILD_DIR}/list_of_install_components
 }
@@ -223,7 +228,7 @@ function k8s_runtime_image()
 
 	ldconfig
 
-	#rm -rf ${BUILD_DIR}/install_components.tgz
+	rm -rf ${BUILD_DIR}/install_components.tgz
 }
 
 function print_usage()

@@ -27,6 +27,7 @@
 #include "cmd_parser.h"
 #include "input_curses.h"
 #include "histedit.h"
+
 #include "libedit_autoconf.h"
 
 static EditLine *el;

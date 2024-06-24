@@ -50,7 +50,11 @@
 static const struct rte_eth_conf default_port_conf = {
 	.rxmode = {
 		.mq_mode        = 0,
-		.max_rx_pkt_len = PROX_MTU + PROX_RTE_ETHER_HDR_LEN + PROX_RTE_ETHER_CRC_LEN
+#if RTE_VERSION < RTE_VERSION_NUM(21,11,0,0)
+		.max_rx_pkt_len = PROX_MTU + PROX_RTE_ETHER_HDR_LEN + PROX_RTE_ETHER_CRC_LEN,
+#else
+		.mtu = PROX_MTU,
+#endif
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -76,6 +80,16 @@ static struct rte_eth_txconf default_tx_conf = {
 	.tx_rs_thresh = 32, /* Use PMD default values */
 };
 
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+static struct rte_sched_subport_profile_params subport_profile_params_default = {
+	.tb_rate = TEN_GIGABIT / NB_PIPES,
+	.tb_size = 4000000,
+
+	.tc_rate = {TEN_GIGABIT / NB_PIPES, TEN_GIGABIT / NB_PIPES, TEN_GIGABIT / NB_PIPES, TEN_GIGABIT / NB_PIPES},
+	.tc_period = 40,
+};
+#endif
+
 static struct rte_sched_port_params port_params_default = {
 	.name = "port_0",
 	.socket = 0,
@@ -83,6 +97,9 @@ static struct rte_sched_port_params port_params_default = {
 	.rate = 0,
 	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
 	.n_subports_per_port = 1,
+#if RTE_VERSION >= RTE_VERSION_NUM(20,11,0,0)
+	.subport_profiles = &subport_profile_params_default,
+#endif
 	.n_pipes_per_subport = NB_PIPES,
 #if RTE_VERSION < RTE_VERSION_NUM(19,11,0,0)
 	.qsize = {QUEUE_SIZES, QUEUE_SIZES, QUEUE_SIZES, QUEUE_SIZES},
@@ -106,10 +123,12 @@ static struct rte_sched_pipe_params pipe_params_default = {
 };
 
 static struct rte_sched_subport_params subport_params_default = {
+#if RTE_VERSION < RTE_VERSION_NUM(20,11,0,0)
 	.tb_rate = TEN_GIGABIT,
 	.tb_size = 4000000,
 	.tc_rate = {TEN_GIGABIT, TEN_GIGABIT, TEN_GIGABIT, TEN_GIGABIT},
 	.tc_period = 40, /* default was 10 */
+#endif
 #if RTE_VERSION > RTE_VERSION_NUM(19,11,0,0)
 	.qsize = {QUEUE_SIZES, QUEUE_SIZES, QUEUE_SIZES, QUEUE_SIZES},
 	.pipe_profiles = NULL,
@@ -207,12 +226,13 @@ void set_port_defaults(void)
 		prox_port_cfg[i].tx_ring[0] = '\0';
 		prox_port_cfg[i].mtu = PROX_MTU;
 		prox_port_cfg[i].dpdk_mapping = NO_VDEV_PORT;
+		prox_port_cfg[i].v6_mask_length = 8;
 
 		// CRC_STRIP becoming the default behavior in DPDK 18.08, and
 		// DEV_RX_OFFLOAD_CRC_STRIP define has been deleted
-#if defined (DEV_RX_OFFLOAD_CRC_STRIP)
-		prox_port_cfg[i].requested_rx_offload = DEV_RX_OFFLOAD_CRC_STRIP;
+#if defined (RTE_ETH_RX_OFFLOAD_CRC_STRIP)
+		prox_port_cfg[i].requested_rx_offload = RTE_ETH_RX_OFFLOAD_CRC_STRIP;
 #endif
-		prox_port_cfg[i].requested_tx_offload = DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
+		prox_port_cfg[i].requested_tx_offload = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
 	}
 }
